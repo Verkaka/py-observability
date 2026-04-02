@@ -61,6 +61,28 @@ def _is_containerized() -> bool:
     return False
 
 
+# Pushgateway URL mapping by environment
+# SRE team manages this mapping - no need for business code to configure
+_PUSHGATEWAY_URL_MAP = {
+    "prod": "http://pushgateway-prod.monitoring:9091",
+    "staging": "http://pushgateway-staging.monitoring:9091",
+    "dev": "http://pushgateway-dev.monitoring:9091",
+    "test": "http://pushgateway-dev.monitoring:9091",
+    "unknown": "http://pushgateway-dev.monitoring:9091",
+}
+
+
+def _get_pushgateway_url(environment: str) -> str | None:
+    """Get Pushgateway URL based on environment.
+
+    Returns None if running in container (Pull mode).
+    Returns mapped URL for VM deployments based on environment.
+    """
+    if _is_containerized():
+        return None  # Container uses Pull mode
+    return _PUSHGATEWAY_URL_MAP.get(environment, "http://pushgateway-dev.monitoring:9091")
+
+
 @dataclass
 class ObservabilityConfig:
     """
@@ -93,11 +115,14 @@ class ObservabilityConfig:
             self.environment = _get_environment(self.namespace)
         # Set default pushgateway_url if not provided
         if self.pushgateway_url is None:
-            env_val = os.getenv("PROM_PUSHGATEWAY_URL", "http://pushgateway.internal:9091")
+            env_val = os.getenv("PROM_PUSHGATEWAY_URL")
             if env_val in ("", "false", "False", "none", "None"):
                 self.pushgateway_url = None
+            elif env_val:
+                self.pushgateway_url = env_val  # Explicit override via env var
             else:
-                self.pushgateway_url = env_val
+                # Auto-detect based on environment
+                self.pushgateway_url = _get_pushgateway_url(self.environment)
         # Also handle explicit false values passed directly
         elif self.pushgateway_url in ("", "false", "False", "none", "None"):
             self.pushgateway_url = None

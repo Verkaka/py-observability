@@ -370,6 +370,16 @@ SRE 团队规定所有内部服务的 Prometheus 指标**必须**携带以下 4 
 - `/proc/1/cgroup` 包含 `docker`/`kubepods`/`containerd`
 - `KUBERNETES_SERVICE_HOST` 环境变量
 
+**Pushgateway URL 自动映射**（SRE 团队维护，业务无需关心）：
+
+| 环境 | Pushgateway URL |
+|---|---|
+| `prod` | `http://pushgateway-prod.monitoring:9091` |
+| `staging` | `http://pushgateway-staging.monitoring:9091` |
+| `dev` / `test` | `http://pushgateway-dev.monitoring:9091` |
+
+如需自定义 URL，设置环境变量 `PROM_PUSHGATEWAY_URL=...`；如需禁用，设置 `PROM_PUSHGATEWAY_URL=false`。
+
 如需禁用自动检测，设置 `AUTO_METRICS_MODE=false`。
 
 ### 手动指定模式
