@@ -2,10 +2,12 @@
 FastAPI demo with async-safe metrics exposure.
 
 Run:
-    APP_ENV=dev APP_VERSION=0.1.0 uvicorn examples.fastapi_demo:app --port 8000
+    ENV=dev APP_VERSION=0.1.0 uvicorn examples.fastapi_demo:app --port 8000
 
 Metrics available at:
     http://localhost:9090/metrics (standalone server)
+
+Application name is auto-populated from the process file name (fastapi_demo).
 """
 from contextlib import asynccontextmanager
 
@@ -16,8 +18,7 @@ from sre_observability.middleware.fastapi import instrument_fastapi
 
 
 cfg = ObservabilityConfig(
-    application="payment-service",
-    namespace="finance",
+    namespace="finance",  # application auto-populated from process name
 )
 
 

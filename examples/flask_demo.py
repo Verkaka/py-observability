@@ -2,10 +2,12 @@
 Flask demo with standalone metrics server.
 
 Run:
-    APP_ENV=dev APP_VERSION=0.1.0 flask --app examples.flask_demo run --port 8000
+    ENV=dev APP_VERSION=0.1.0 flask --app examples.flask_demo run --port 8000
 
 Metrics available at:
     http://localhost:9090/metrics
+
+Application name is auto-populated from the process file name (flask_demo).
 """
 from flask import Flask, jsonify
 
@@ -14,8 +16,7 @@ from sre_observability.middleware.flask import instrument_flask
 
 
 cfg = ObservabilityConfig(
-    application="order-service",
-    namespace="commerce",
+    namespace="commerce",  # application auto-populated from process name
 )
 
 obs = setup_observability(cfg, start_metrics_server=True)

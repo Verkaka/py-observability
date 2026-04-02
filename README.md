@@ -66,10 +66,11 @@ from fastapi import FastAPI
 from sre_observability import ObservabilityConfig, setup_observability
 from sre_observability.middleware.fastapi import instrument_fastapi
 
-# 1. 声明服务身份（必填：application、namespace）
+# 1. 声明服务身份（只需 namespace，application 自动取进程名）
 cfg = ObservabilityConfig(
-    application="payment-service",
     namespace="finance",
+    # application 可选，不填则自动取 Python 进程文件名
+    # application="payment-service",
 )
 
 # 2. 在 lifespan 中初始化，启用独立 metrics server（异步安全）
@@ -93,7 +94,10 @@ async def pay(amount: float):
 启动：
 
 ```bash
-APP_ENV=prod APP_VERSION=1.2.0 uvicorn main:app --host 0.0.0.0 --port 8000
+# ENV 根据 namespace 决定：
+# - namespace="strategy" → 使用 STRATEGY_ENV
+# - 其他 namespace → 使用 ENV
+ENV=prod APP_VERSION=1.2.0 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 访问 `http://localhost:9090/metrics` 即可看到全部指标。
@@ -109,8 +113,9 @@ from sre_observability import ObservabilityConfig, setup_observability
 from sre_observability.middleware.flask import instrument_flask
 
 cfg = ObservabilityConfig(
-    application="order-service",
     namespace="commerce",
+    # application 可选，不填则自动取 Python 进程文件名
+    # application="order-service",
 )
 
 # start_metrics_server=True：在独立端口（默认 9090）启动 Prometheus HTTP server
@@ -130,7 +135,10 @@ def get_order(order_id: int):
 启动：
 
 ```bash
-APP_ENV=prod APP_VERSION=1.0.0 flask --app main run --port 8000
+# ENV 根据 namespace 决定：
+# - namespace="strategy" → 使用 STRATEGY_ENV
+# - 其他 namespace → 使用 ENV
+ENV=prod APP_VERSION=1.0.0 flask --app main run --port 8000
 # Prometheus 指标在 :9090/metrics
 ```
 
@@ -177,9 +185,9 @@ flask --app main run --port 8000
 
 | 参数 | 类型 | 必填 | 环境变量 | 默认值 | 说明 |
 |---|---|---|---|---|---|
-| `application` | str | ✅ | — | — | 服务名，如 `payment-service` |
 | `namespace` | str | ✅ | — | — | k8s namespace 或业务域 |
-| `environment` | str | | `APP_ENV` | `unknown` | `prod` / `staging` / `dev` |
+| `application` | str | | — | 进程文件名 | 服务名，不填则自动取 Python 进程文件名 |
+| `environment` | str | | `ENV` / `STRATEGY_ENV` | `unknown` | 当 `namespace="strategy"` 时使用 `STRATEGY_ENV`，否则使用 `ENV` |
 | `version` | str | | `APP_VERSION` | `unknown` | 服务版本号 |
 | `instance` | str | | `HOSTNAME` | 主机名 | Pod 名 / 实例标识 |
 | `metrics_port` | int | | `METRICS_PORT` | `9090` | 独立 metrics server 端口 |
@@ -190,15 +198,15 @@ flask --app main run --port 8000
 | `otel_enabled` | bool | | `OTEL_ENABLED` | `true` | 是否启用 OTel tracing |
 | `trace_sample_rate` | float | | `OTEL_TRACE_SAMPLE_RATE` | `1.0` | 采样率，0.0–1.0 |
 
-**推荐做法**：在代码中只填 `application` 和 `namespace`，其余通过部署平台的环境变量注入，做到代码与环境无关。
+**推荐做法**：在代码中只填 `namespace`，其余通过环境变量注入，做到代码与环境无关。
 
 ```python
-# 代码中（不含环境信息）
-cfg = ObservabilityConfig(application="payment-service", namespace="finance")
+# 代码中（只需 namespace）
+cfg = ObservabilityConfig(namespace="finance")
 
 # Kubernetes Deployment 中注入
 env:
-  - name: APP_ENV
+  - name: ENV
     value: prod
   - name: APP_VERSION
     valueFrom:
@@ -206,6 +214,13 @@ env:
         fieldPath: metadata.labels['version']
   - name: OTEL_EXPORTER_OTLP_ENDPOINT
     value: "http://otel-collector.monitoring:4317"
+```
+
+对于 `namespace="strategy"` 的任务，使用 `STRATEGY_ENV`：
+
+```bash
+# strategy 类型的服务
+STRATEGY_ENV=strategy_prod python strategy_task.py
 ```
 
 ---

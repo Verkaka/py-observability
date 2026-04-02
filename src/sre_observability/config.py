@@ -4,13 +4,37 @@ Global configuration and standard label management.
 Usage:
     from sre_observability.config import ObservabilityConfig
 
-    cfg = ObservabilityConfig(application="payment-service", namespace="finance")
+    cfg = ObservabilityConfig(namespace="finance")  # application 自动取进程名
 """
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, Optional
+
+
+def _get_application() -> str:
+    """Get application name from Python process file name."""
+    if len(sys.argv) > 0:
+        import pathlib
+        main_file = pathlib.Path(sys.argv[0]).name
+        # Remove .py extension if present
+        if main_file.endswith('.py'):
+            return main_file[:-3]
+        return main_file
+    return "unknown"
+
+
+def _get_environment(namespace: Optional[str] = None) -> str:
+    """Get environment value based on namespace.
+
+    If namespace is 'strategy', use STRATEGY_ENV env var.
+    Otherwise, use ENV env var.
+    """
+    if namespace == "strategy":
+        return os.getenv("STRATEGY_ENV", "unknown")
+    return os.getenv("ENV", "unknown")
 
 
 @dataclass
@@ -19,23 +43,30 @@ class ObservabilityConfig:
     Central configuration for observability.
 
     Required labels injected into every metric and span:
-      - application : service / application name
-      - namespace   : k8s namespace or logical team boundary
+      - application : auto-populated from process file name
+      - namespace   : k8s namespace or logical team boundary (required)
 
     Optional labels (auto-populated from env if not given):
-      - environment : prod / staging / dev  (env: APP_ENV)
+      - environment : from ENV or STRATEGY_ENV (based on namespace)
       - version     : release version       (env: APP_VERSION)
       - instance    : pod / host name        (env: HOSTNAME)
     """
 
     # --- required ---
-    application: str
     namespace: str
 
+    # --- optional (auto-populated) ---
+    application: str = field(default_factory=_get_application)
+
     # --- optional (env fallback) ---
-    environment: str = field(default_factory=lambda: os.getenv("APP_ENV", "unknown"))
+    # environment is set via __post_init__ to use namespace value
+    environment: str = field(default=None)  # type: ignore
     version: str = field(default_factory=lambda: os.getenv("APP_VERSION", "unknown"))
     instance: str = field(default_factory=lambda: os.getenv("HOSTNAME", "unknown"))
+
+    def __post_init__(self):
+        if self.environment is None:
+            self.environment = _get_environment(self.namespace)
 
     # --- prometheus ---
     metrics_port: int = field(default_factory=lambda: int(os.getenv("METRICS_PORT", "9090")))

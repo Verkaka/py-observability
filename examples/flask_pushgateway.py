@@ -4,11 +4,13 @@ Flask demo with Pushgateway mode (for VM deployments).
 Use this when you cannot open a dedicated metrics port on the host.
 
 Run:
-    APP_ENV=dev APP_VERSION=0.1.0 \
+    ENV=dev APP_VERSION=0.1.0 \
     PROM_PUSHGATEWAY_URL=http://localhost:9091 \
     flask --app examples.flask_pushgateway run --port 8000
 
 Metrics will be pushed to Pushgateway every 15 seconds.
+
+Application name is auto-populated from the process file name (flask_pushgateway).
 """
 from flask import Flask, jsonify
 
@@ -17,8 +19,7 @@ from sre_observability.middleware.flask import instrument_flask
 
 
 cfg = ObservabilityConfig(
-    application="order-service",
-    namespace="commerce",
+    namespace="commerce",  # application auto-populated from process name
     # Pushgateway URL (or set via env: PROM_PUSHGATEWAY_URL)
     pushgateway_url="http://localhost:9091",
     pushgateway_interval=15,
