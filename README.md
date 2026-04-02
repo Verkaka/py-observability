@@ -356,7 +356,37 @@ SRE 团队规定所有内部服务的 Prometheus 指标**必须**携带以下 4 
 
 ## 两种采集模式对比
 
-本包支持 **Pull（独立 HTTP Server）** 和 **Push（Pushgateway）** 两种模式，可根据部署环境选择。
+本包支持 **Pull（独立 HTTP Server）** 和 **Push（Pushgateway）** 两种模式。
+
+**默认行为（推荐）**：自动检测部署环境并选择合适的模式：
+- **容器内（K8s/Docker）** → Pull 模式（HTTP Server on :9090）
+- **虚拟机** → Push 模式（Pushgateway）
+
+### 自动检测原理
+
+包会在启动时检测以下容器特征：
+- `/var/run/secrets/kubernetes.io/serviceaccount` 存在（K8s）
+- `/.dockerenv` 存在（Docker）
+- `/proc/1/cgroup` 包含 `docker`/`kubepods`/`containerd`
+- `KUBERNETES_SERVICE_HOST` 环境变量
+
+如需禁用自动检测，设置 `AUTO_METRICS_MODE=false`。
+
+### 手动指定模式
+
+```python
+# 强制使用 Pull 模式（HTTP Server）
+cfg = ObservabilityConfig(namespace="finance")
+obs = setup_observability(cfg, start_metrics_server=True)
+
+# 强制使用 Push 模式（Pushgateway）
+cfg = ObservabilityConfig(namespace="finance")
+obs = setup_observability(cfg, start_metrics_server=False)
+
+# 禁用 Pushgateway（即使检测到 VM）
+cfg = ObservabilityConfig(namespace="finance", pushgateway_url="false")
+obs = setup_observability(cfg)
+```
 
 ### 架构对比
 
@@ -380,13 +410,14 @@ SRE 团队规定所有内部服务的 Prometheus 指标**必须**携带以下 4 
 
 ### 选型建议
 
-**选择 Pull 模式（`start_metrics_server=True`）**：
+**默认情况（无需配置）**：自动检测，容器 Pull/VM Push
 
-- 已容器化部署在 K8s
-- VM 独享且可开放端口
-- 希望减少外部依赖
+**手动强制 Pull 模式**：
 
-**选择 Pushgateway 模式（`pushgateway_url=...`）**：
+- 容器化部署在 K8s（自动检测，无需手动配置）
+- VM 独享且可开放端口（设置 `AUTO_METRICS_MODE=false`）
+
+**手动强制 Push 模式**：
 
 - 多 Python 进程共享同一 VM（端口冲突风险）
 - 网络隔离导致 Prometheus 无法直连应用
@@ -395,17 +426,21 @@ SRE 团队规定所有内部服务的 Prometheus 指标**必须**携带以下 4 
 ### 代码差异
 
 ```python
-# Pull 模式
-cfg = ObservabilityConfig(application="svc", namespace="team")
-obs = setup_observability(cfg, start_metrics_server=True)  # 监听 9090
+# 默认：自动检测（容器 Pull / VM Push）
+cfg = ObservabilityConfig(namespace="team")
+obs = setup_observability(cfg)
 
-# Push 模式
-cfg = ObservabilityConfig(
-    application="svc",
-    namespace="team",
-    pushgateway_url="http://pushgateway:9091",
-)
-obs = setup_observability(cfg)  # 无需 start_metrics_server
+# 强制 Pull 模式（HTTP Server）
+cfg = ObservabilityConfig(namespace="team")
+obs = setup_observability(cfg, start_metrics_server=True)
+
+# 强制 Push 模式（禁用自动检测）
+cfg = ObservabilityConfig(namespace="team", pushgateway_url="http://pushgateway:9091")
+obs = setup_observability(cfg, start_metrics_server=False)
+
+# 禁用 Pushgateway（即使检测到 VM 也只开 HTTP Server）
+cfg = ObservabilityConfig(namespace="team", pushgateway_url="false")
+obs = setup_observability(cfg)
 ```
 
 ---

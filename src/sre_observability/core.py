@@ -4,10 +4,8 @@ Core initialization: one-stop setup for Prometheus + OpenTelemetry.
 Usage:
     from sre_observability import ObservabilityConfig, setup_observability
 
-    cfg = ObservabilityConfig(application="my-service", namespace="team")
-    obs = setup_observability(cfg, start_metrics_server=True)
-    # ... at shutdown:
-    obs.shutdown()
+    cfg = ObservabilityConfig(namespace="team")
+    obs = setup_observability(cfg)  # auto-detects container vs VM
 """
 from __future__ import annotations
 
@@ -32,7 +30,7 @@ class ObservabilityManager:
     def __init__(
         self,
         config: "ObservabilityConfig",
-        start_metrics_server: bool = False,
+        start_metrics_server: bool | None = None,
     ) -> None:
         self.config = config
         self.config.validate()
@@ -44,17 +42,31 @@ class ObservabilityManager:
         # OpenTelemetry tracing
         self.tracer_provider = setup_tracing(config)
 
-        # Pushgateway mode (for VM deployments)
+        # Auto-detect or explicit metrics mode
+        use_pushgateway = config.should_use_pushgateway()
+
+        # Explicit start_metrics_server overrides auto-detection
+        if start_metrics_server is None:
+            # Auto mode: Pushgateway for VM, HTTP server for container
+            use_http_server = not use_pushgateway
+        else:
+            use_http_server = start_metrics_server
+
+        # Pushgateway mode
         self.pushgateway = None
-        if config.pushgateway_url:
+        if use_pushgateway:
             from sre_observability.metrics.pushgateway import PushgatewayCollector
             self.pushgateway = PushgatewayCollector(config)
             self.pushgateway.start()
-            logger.info("Pushgateway mode enabled: %s", config.pushgateway_url)
+            logger.info(
+                "Pushgateway mode enabled (url=%s, interval=%ds)",
+                config.pushgateway_url or "auto-detected",
+                config.pushgateway_interval,
+            )
 
-        # Optional: standalone Prometheus HTTP server
+        # Standalone Prometheus HTTP server
         self._metrics_server_started = False
-        if start_metrics_server:
+        if use_http_server:
             start_http_server(config.metrics_port, addr="0.0.0.0")
             self._metrics_server_started = True
             logger.info(
@@ -77,17 +89,17 @@ class ObservabilityManager:
 
 def setup_observability(
     config: "ObservabilityConfig",
-    start_metrics_server: bool = False,
+    start_metrics_server: bool | None = None,
 ) -> ObservabilityManager:
     """
     Initialize all observability components.
 
     Args:
         config: Service identity and environment config
-        start_metrics_server: If True, start a standalone HTTP server on
-            config.metrics_port (default 9090) to serve /metrics.
-            Use this for Flask or when you don't want to expose /metrics
-            on the main application port.
+        start_metrics_server: Explicitly enable/disable standalone HTTP server.
+            If None (default), auto-detects:
+            - Container (K8s/Docker) → HTTP server on :9090
+            - VM → Pushgateway mode (requires pushgateway_url or PROM_PUSHGATEWAY_URL)
 
     Returns:
         ObservabilityManager instance (call .shutdown() on exit if needed)

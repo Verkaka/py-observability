@@ -37,6 +37,30 @@ def _get_environment(namespace: Optional[str] = None) -> str:
     return os.getenv("ENV", "unknown")
 
 
+def _is_containerized() -> bool:
+    """Detect if running inside a container (Docker/K8s)."""
+    # Check for K8s service account
+    if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount"):
+        return True
+    # Check for Docker socket
+    if os.path.exists("/.dockerenv"):
+        return True
+    # Check for container runtime cgroups
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            cgroup = f.read()
+            if any(x in cgroup for x in ["docker", "kubepods", "containerd"]):
+                return True
+    except Exception:
+        pass
+    # Check environment variables
+    if os.getenv("KUBERNETES_SERVICE_HOST"):
+        return True
+    if os.getenv("CONTAINER_NAME") or os.getenv("DOCKER_CONTAINER"):
+        return True
+    return False
+
+
 @dataclass
 class ObservabilityConfig:
     """
@@ -67,12 +91,25 @@ class ObservabilityConfig:
     def __post_init__(self):
         if self.environment is None:
             self.environment = _get_environment(self.namespace)
+        # Set default pushgateway_url if not provided
+        if self.pushgateway_url is None:
+            env_val = os.getenv("PROM_PUSHGATEWAY_URL", "http://pushgateway.internal:9091")
+            if env_val in ("", "false", "False", "none", "None"):
+                self.pushgateway_url = None
+            else:
+                self.pushgateway_url = env_val
+        # Also handle explicit false values passed directly
+        elif self.pushgateway_url in ("", "false", "False", "none", "None"):
+            self.pushgateway_url = None
 
     # --- prometheus ---
     metrics_port: int = field(default_factory=lambda: int(os.getenv("METRICS_PORT", "9090")))
     metrics_path: str = "/metrics"
-    # Pushgateway mode (for VM deployments without dedicated ports)
-    pushgateway_url: str | None = field(default_factory=lambda: os.getenv("PROM_PUSHGATEWAY_URL"))
+    # Auto-detect deployment mode (container vs VM)
+    auto_metrics_mode: bool = field(default_factory=lambda: os.getenv("AUTO_METRICS_MODE", "true").lower() == "true")
+    # Pushgateway URL - default set in __post_init__
+    # Set PROM_PUSHGATEWAY_URL=false to disable Pushgateway mode
+    pushgateway_url: str | None = field(default=None)
     pushgateway_interval: int = field(default_factory=lambda: int(os.getenv("PROM_PUSH_INTERVAL", "15")))
     pushgateway_job: str | None = None  # defaults to application name if not set
 
@@ -112,3 +149,22 @@ class ObservabilityConfig:
             raise ValueError("ObservabilityConfig.application must not be empty")
         if not self.namespace:
             raise ValueError("ObservabilityConfig.namespace must not be empty")
+
+    def should_use_pushgateway(self) -> bool:
+        """Determine if Pushgateway mode should be used.
+
+        Returns True if:
+        - auto_metrics_mode is True and not running in a container (default)
+
+        Returns False if:
+        - pushgateway_url is explicitly set to None or "false"
+        - running in a container (auto-detection)
+
+        Note: In container, metrics are exposed via HTTP server on :9090 (Pull mode).
+              On VM, metrics are pushed to Pushgateway (Push mode).
+        """
+        if self.pushgateway_url is None:
+            return False
+        if self.auto_metrics_mode:
+            return not _is_containerized()
+        return False  # auto_metrics_mode=False without explicit pushgateway
