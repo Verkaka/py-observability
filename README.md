@@ -13,14 +13,17 @@
 - [快速开始](#快速开始)
   - [FastAPI](#fastapi)
   - [Flask](#flask)
+  - [量化策略](#量化策略)
 - [配置参考](#配置参考)
 - [指标说明](#指标说明)
   - [运行时指标](#运行时指标)
   - [HTTP 接口指标](#http-接口指标)
+  - [策略业务指标](#策略业务指标)
 - [OpenTelemetry Tracing](#opentelemetry-tracing)
 - [标准 Label 规范](#标准-label-规范)
 - [Prometheus 采集配置](#prometheus-采集配置)
 - [Grafana 面板查询参考](#grafana-面板查询参考)
+- [策略监控与告警](#策略监控与告警)
 - [开发与贡献](#开发与贡献)
 
 ---
@@ -35,6 +38,7 @@
 | **OpenTelemetry** | Trace 自动上报 OTLP，Resource 属性对齐 label 规范，trace_id 注入日志 |
 | **框架中间件** | FastAPI 和 Flask 开箱即用，无需手动埋点 |
 | **零侵入** | 仅需在启动处调用一次 `setup_observability()` |
+| **量化策略支持** | 策略注册、交易指标、PnL、持仓、延迟、心跳、告警联动 |
 
 ---
 
@@ -179,6 +183,45 @@ flask --app main run --port 8000
 
 ---
 
+### 量化策略
+
+```python
+from sre_observability.strategy import init_strategy
+
+# 初始化策略上下文（自动注册、指标、告警）
+ctx = init_strategy(
+    strategy_id="btc_arb_v1",          # 策略唯一 ID
+    strategy_name="BTC Arbitrage",     # 策略名称
+    team="quant-team",                 # 所属团队
+    owner="trader@example.com",        # 负责人
+    namespace="quant-team",            # Prometheus namespace
+    environment="prod",                # 环境
+    alert_webhook_url="http://alert-platform/webhook",
+)
+
+# 策略主循环
+while ctx.is_running:
+    # 交易跟踪（自动记录延迟、成功率）
+    with ctx.track_trade("BTCUSDT", "buy", 1.0, 50000):
+        execute_trade(...)
+
+    # 记录盈亏和持仓
+    ctx.record_pnl("BTCUSDT", pnl=250.5)
+    ctx.record_position("BTCUSDT", position=5.0)
+
+    # 心跳（用于检测策略存活）
+    ctx.heartbeat()
+```
+
+启动：
+
+```bash
+ENV=prod ALERT_WEBHOOK_URL=http://alert-platform/webhook \
+python strategy.py
+```
+
+---
+
 ## 配置参考
 
 `ObservabilityConfig` 支持构造参数和环境变量两种方式，优先使用构造参数。
@@ -279,6 +322,49 @@ sum(rate(http_requests_total{application="payment-service"}[5m]))
 
 # 当前并发
 http_requests_in_flight{application="payment-service"}
+```
+
+---
+
+### 策略业务指标
+
+由 `sre_observability.strategy` 模块提供，专用于量化策略监控。
+
+| 指标名 | 类型 | Label | 说明 |
+|---|---|---|---|
+| `strategy_trades_total` | Counter | strategy_id, team, symbol, side | 交易次数 |
+| `strategy_trade_volume` | Counter | 同上 | 交易金额（计价币） |
+| `strategy_pnl` | Gauge | strategy_id, team, symbol | 盈亏（当前） |
+| `strategy_pnl_cumulative` | Counter | 同上 | 累计盈亏 |
+| `strategy_position` | Gauge | 同上 | 当前持仓 |
+| `strategy_order_latency_seconds` | Histogram | strategy_id, team | 订单延迟（信号到下单） |
+| `strategy_orders_success_total` | Counter | 同上 | 成功订单数 |
+| `strategy_orders_failed_total` | Counter | 同上 + error_type | 失败订单数 |
+| `strategy_signal_latency_seconds` | Histogram | strategy_id, team | 信号延迟（行情到信号） |
+| `strategy_status` | Gauge | strategy_id, team | 运行状态 (1=运行，0=停止，-1=错误) |
+| `strategy_heartbeat_timestamp` | Gauge | 同上 | 心跳时间戳 |
+
+**查询示例**：
+
+```promql
+# 策略交易次数（过去 5 分钟）
+sum(rate(strategy_trades_total{strategy_id="btc_arb_v1"}[5m]))
+
+# 各策略 PnL 对比
+sum by (strategy_id) (strategy_pnl)
+
+# 订单延迟 P95
+histogram_quantile(0.95,
+  rate(strategy_order_latency_seconds_bucket[5m])
+)
+
+# 订单失败率
+sum(rate(strategy_orders_failed_total[5m])) 
+/ 
+sum(rate(strategy_orders_success_total[5m]) + rate(strategy_orders_failed_total[5m]))
+
+# 心跳检测（检测策略是否存活）
+(time() - strategy_heartbeat_timestamp) > 60  # 超过 60 秒无心跳
 ```
 
 ---
@@ -552,6 +638,120 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.application }} 内存使用率超过 80%"
+```
+
+---
+
+## 策略监控与告警
+
+### 架构图
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    策略平台                                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │  策略 A     │  │  策略 B     │  │  策略 C     │         │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
+│         │                │                │                  │
+│         └────────────────┴────────────────┘                  │
+│                      │                                       │
+│         ┌────────────▼────────────┐                          │
+│         │  sre-observability      │                          │
+│         │  - 策略注册              │                          │
+│         │  - 指标采集              │                          │
+│         │  - 心跳上报              │                          │
+│         └────────────┬────────────┘                          │
+└──────────────────────┼───────────────────────────────────────┘
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+        ▼              ▼              ▼
+┌──────────────┐ ┌───────────┐ ┌──────────────┐
+│  Prometheus  │ │  Grafana  │ │ Alertmanager │
+└──────┬───────┘ └───────────┘ └──────┬───────┘
+       │                              │
+       └──────────────┬───────────────┘
+                      │
+                      ▼
+            ┌─────────────────┐
+            │ 内部告警平台     │
+            │ (Webhook 接收)  │
+            └─────────────────┘
+```
+
+### 策略注册流程
+
+1. **策略启动时自动注册**
+   ```python
+   from sre_observability.strategy import init_strategy
+
+   ctx = init_strategy(
+       strategy_id="btc_arb_v1",
+       strategy_name="BTC Arbitrage",
+       team="quant-team",
+       owner="trader@example.com",
+       namespace="quant-team",
+   )
+   ```
+
+2. **心跳上报**（检测策略存活）
+   ```python
+   while ctx.is_running:
+       ctx.heartbeat()  # 每 10-30 秒调用一次
+   ```
+
+3. **策略退出时自动注销**
+   ```python
+   ctx.stop()  # 状态标记为 stopped，通知注册中心
+   ```
+
+### 预定义告警规则
+
+包内已内置常用告警规则模板，可通过 `generate_alertmanager_rules()` 生成：
+
+```python
+from sre_observability.strategy.alerts import generate_alertmanager_rules
+
+print(generate_alertmanager_rules())
+```
+
+输出可直接用于 Prometheus Alertmanager 配置。
+
+### 告警联动设计
+
+| 告警类型 | 触发条件 | 告警级别 | 联动动作 |
+|---|---|---|---|
+| 策略心跳丢失 | `strategy_heartbeat_timestamp` 超过 60s | critical | 通知负责人，暂停策略交易 |
+| 订单失败率过高 | 失败率 > 10% 持续 2 分钟 | warning | 通知技术团队检查 |
+| 订单延迟过高 | P95 延迟 > 100ms | warning | 通知技术团队优化 |
+| 大额亏损 | 单笔 PnL < -1000 | critical | 通知风控团队 |
+| 策略状态异常 | `strategy_status == -1` | critical | 通知负责人 |
+
+### Alertmanager 配置示例
+
+```yaml
+# alertmanager.yml
+route:
+  group_by: ['alert_type', 'strategy_id']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'alert-platform'
+  routes:
+    - match:
+        severity: critical
+      receiver: 'alert-platform-critical'
+    - match:
+        alert_type: heartbeat_lost
+      receiver: 'alert-platform-urgent'
+
+receivers:
+  - name: 'alert-platform'
+    webhook_configs:
+      - url: 'http://alert-platform.internal/webhook'
+  - name: 'alert-platform-critical'
+    webhook_configs:
+      - url: 'http://alert-platform.internal/webhook/critical'
 ```
 
 ---
